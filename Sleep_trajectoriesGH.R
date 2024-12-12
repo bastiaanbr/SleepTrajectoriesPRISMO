@@ -21,22 +21,13 @@ library(haven)
 
 # data manipulation
 library(tidyverse) # includes dply, tidyr and ggplot2
-library(naniar)
-library(reshape2)
-library(MASS)
 
 # visualizations
 library(Cairo)
 
-# statistics
-library(e1071)
-
 # trajectory analysis
-library(worcs)
 library(tidySEM) # for SEM/ trajectory analysis
-library(igraph)
-library(OpenMx)
-library(kableExtra)
+library(OpenMx) # Required for tidySEM
 
 
 #------------------------------------------------------------------------------#
