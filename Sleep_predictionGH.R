@@ -22,43 +22,25 @@ library(readxl)
 
 # data manipulation
 library(tidyverse)
-library(tidyr)
 library(naniar)
-library(dplyr)
 library(reshape2)
-library(MASS)
-library(plyr)
-library(foreign)
 
 # visualizations
 library(ggplot2)
-library(Cairo)
-library(gridExtra)
-library(patchwork)
 
 # statistics
-library(e1071)
-library(missRanger)
-library(npmv)
 library(openxlsx)
 library(matrixStats)
-library(randomForest)
 library(pROC)
 library(caret)
-library(gbm)
 library(xgboost)
-library(shapper)
-library(reticulate)
 library(shapr)
-library(SHAPforxgboost)
 library(car)
 library(stats)
 library(glmnet)
-library(iml)
 
 # Other
 library(doMC)
-
 
 
 #------------------------------------------------------------------------------#
