@@ -3,8 +3,8 @@
 # Description:  This script does prediction of insomnia symptom trajectories wit both linear and nonlinear models
 #
 # Authors:      B.Bruinsma
-# Date:         December 2024
-# Version:      2.0
+# Date:         December 2024, edit in may 2025 for revision manuscript
+# Version:      2.1
 #
 #------------------------------------------------------------------------------#
 
@@ -41,6 +41,7 @@ library(glmnet)
 
 # Other
 library(doMC)
+
 
 
 #------------------------------------------------------------------------------#
@@ -149,6 +150,12 @@ ggplot(data.frame(specificity = XGbROC$specificities, sensitivity = XGbROC$sensi
   theme_classic() +
   labs(title = paste0("AUROC =", signif(auc(XGbROC), 3)))
 
+# AUC values from each resample (fold)
+head(xgbTune$resample$ROC)
+
+# Summary statistics (mean, SD) of AUC across all CV folds
+mean_auc_cv <- mean(xgbTune$resample$ROC)
+sd_auc_cv <- sd(xgbTune$resample$ROC)
 
 #------------------------------------------------------------------------------#
 #           XGBoost: SHAP (Shapley Additive Explanation) of variables
@@ -169,10 +176,10 @@ mean_shap_scores <- shap_values$mean_shap_score
 shap_data <- data.frame(Variable = variable_names, Mean_SHAP_Score = mean_shap_scores)
 
 # Write to Excel
-write.xlsx(shap_data, "shap_scores_postDep_281124.xlsx", rowNames = FALSE)
+write.xlsx(shap_data, "filename.xlsx", rowNames = FALSE)
 
 # For the plot filter out the variables that have SHAP = 0 (optional)
-shap_plot_filtered <- subset(shap_data_plot, Mean_SHAP_Score > 0)
+shap_plot_filtered <- subset(shap_data_plot, Mean_SHAP_Score > 0.01)
 
 
 #------------------------------------------------------------------------------#
@@ -252,10 +259,10 @@ coef_abs <- rbind(data.frame(analyte = "intercept", coefficient = coef[1,]), coe
   mutate(coefficient = round(coefficient, 3))
 
 # For the plot filter out the variables that have coefficient = 0 (optional)
-coef_filtered <- subset(coef_abs, coefficient > 0)
+coef_filtered <- subset(coef_abs, coefficient > 0.01)
 
 # Write to Excel
-write.xlsx(coef_filtered, "Coefficients_LogResEN_postDep_281124.xlsx", rowNames = FALSE)
+write.xlsx(coef_filtered, "filename.xlsx", rowNames = FALSE)
 
 #Get predicted class probabilities so we can build ROC curve.
 elProbs <- predict(elTune, test_data[,-1], type="prob")
@@ -274,3 +281,7 @@ ggplot(data.table("1-FPR" = elROC$specificities, TPR = elROC$sensitivities), aes
   coord_fixed(ratio = 1, xlim = NULL, ylim = NULL, expand = TRUE, clip = "on") +
   theme_classic() +
   labs(title = paste0("AUROC =", signif(auc(elROC), 3)))
+
+# Summary statistics (mean, SD) of AUC across all CV folds
+mean_auc_cv <- mean(elTune$resample$ROC)
+sd_auc_cv <- sd(elTune$resample$ROC)
