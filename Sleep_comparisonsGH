@@ -1,0 +1,480 @@
+#------------- Script For The Five Insomnia Trajectories Baseline Comparison --------------#
+#
+# Description:  This script calculates and plots the statistical comparison of pre-deployment variables between the five insomnia trajectories
+#
+# Authors:      B.Bruinsma
+# Date:         May 2025
+# Version:      1.0
+#
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+#                          Settings & Dependencies
+#------------------------------------------------------------------------------#
+setwd("/Users/bbruinsm/Documents/Projecten/SLAAP/PRISMO sleep and fatigue")
+
+# Define path of the Rproject to get and save files
+save_loc = "/Users/bbruinsm/Documents/Projecten/SLAAP/PRISMO sleep and fatigue"
+
+
+# data manipulation
+library(tidyverse)
+library(tidyr)
+library(naniar)
+library(dplyr)
+library(purrr)
+library(stringr)
+
+# visualizations
+library(ggplot2)
+library(Cairo)
+library(ggpubr)
+library(ggsignif)
+library(cowplot)
+library(ggpubr)
+
+# statistics
+library(e1071)
+library(effsize)
+library(npmv)
+library(FSA)
+
+# export 
+library(openxlsx)
+
+# Load required packages
+library(parallel)
+library(foreach)
+library(doParallel)
+
+#------------------------------------------------------------------------------#
+#                              Data Collection
+#------------------------------------------------------------------------------#
+
+# Import the data of the pre-deployment variables
+load('path the file.RData')
+
+
+# Define questionnaire variables
+Quest_vars <- c(
+  "DES_total_score", "CIS_act_A", "CIS_conc_A", "CIS_mot_A", "CIS_fat_sev_A", "A_ETI_gen", "A_ETI_phys", 
+  "A_ETI_emo", "A_ETI_sex", "SCL_ago_A", "SCL_ang_A", "SCL_dep_A", 
+  "SCL_som_A", "SCL_ins_A", "SCL_sen_A", "SCL_hos_A", 
+  "ZIL_re_experiencing_A", "ZIL_avoidance_A", "ZIL_hyperarousal_A", 
+  "A_VTCI_NS", "A_VTCI_HA", "A_VTCI_RD", "A_VTCI_P", "A_VTCI_SD", 
+  "A_VTCI_C", "A_VTCI_ST", "A_UBOS_EE", "A_UBOS_DP", "A_UBOS_PA", "Physical_A_total"
+)
+
+
+# Define biological variables
+Biol_vars <- c(
+  "NPY", "Vasopressin", "Oxytocin", "Testosterone", "SHBG", "DHEA", "GABA", "cort_pre"
+)
+
+
+#------------------------------------------------------------------------------#
+#                   Multivariate tests - questionnaire data
+#------------------------------------------------------------------------------#
+
+# Combine data into one data frame
+npv_data <- Stat_data[, c("individual.predicted", Quest_vars)]
+npv_data$group <- as.factor(npv_data$individual.predicted)
+group <- as.factor(Stat_data$individual.predicted)
+
+# Test overall p-value with non-parametric manova (no demographics)
+result <- nonpartest(DES_total_score|CIS_act_A|CIS_conc_A|CIS_fat_sev_A|CIS_mot_A|A_ETI_gen|A_ETI_phys|A_ETI_emo|A_ETI_sex|SCL_ago_A|SCL_ang_A|SCL_dep_A|SCL_som_A|SCL_ins_A|SCL_sen_A|SCL_hos_A|ZIL_re_experiencing_A|ZIL_avoidance_A|ZIL_hyperarousal_A|A_VTCI_NS|A_VTCI_HA|A_VTCI_RD|A_VTCI_P|A_VTCI_SD|A_VTCI_C|A_VTCI_ST|A_UBOS_EE|A_UBOS_DP|A_UBOS_PA|Physical_A_total~individual.predicted,Stat_data,permreps=1000, plots=FALSE)
+
+# Kruskal-Wallis test per variable with statistic and df
+kw_results <- map_df(Quest_vars, function(var) {
+  test <- kruskal.test(reformulate("group", var), data = Stat_data)
+  tibble(
+    variable = var,
+    statistic = unname(test$statistic),
+    df = unname(test$parameter),
+    p_value = test$p.value
+  )
+})
+
+# FDR correction across variables
+kw_results <- kw_results %>%
+  mutate(p_fdr = p.adjust(p_value, method = "fdr"),
+         significant = p_fdr < 0.05)
+
+# View significant variables
+sig_vars <- kw_results %>% filter(significant) %>% pull(variable)
+
+# Dunn’s post-hoc test with FDR correction (only for significant variables)
+dunn_results <- map_df(sig_vars, function(var) {
+  dt <- dunnTest(reformulate("group", var), data = Stat_data, method = "none")  # No correction yet
+  posthoc <- dt$res
+  posthoc$variable <- var
+  posthoc
+})
+
+# Apply FDR correction within each variable's set of pairwise comparisons
+dunn_results_fdr <- dunn_results %>%
+  group_by(variable) %>%
+  mutate(p_fdr = p.adjust(P.adj, method = "fdr")) %>%
+  ungroup()
+
+## Cliff's delta effect size
+# Filter for significant comparisons
+sig_dunn <- dunn_results_fdr %>% 
+  filter(p_fdr < 0.05)
+
+# Compute Cliff's delta for each significant variable and comparison
+cliffs_results <- map_df(1:nrow(sig_dunn), function(i) {
+  row <- sig_dunn[i, ]
+  var <- row$variable
+  comparison <- row$Comparison
+  groups <- str_split(Comparison, " - ", simplify = TRUE)
+  
+  # Get data for each group
+  group1 <- groups[1]
+  group2 <- groups[2]
+  
+  # Subset the data
+  data1 <- Stat_data %>% filter(group == group1) %>% pull(!!sym(var))
+  data2 <- Stat_data %>% filter(group == group2) %>% pull(!!sym(var))
+  
+  # Compute Cliff's delta
+  d <- cliff.delta(data1, data2)
+  
+  tibble(
+    variable = var,
+    comparison = comparison,
+    delta = d$estimate,
+    magnitude = d$magnitude
+  )
+})
+
+# Save to Excel
+write_xlsx(cliffs_results, "filename.xlsx")
+
+# Calculate 95% CI for Cliffs delta
+# Function to bootstrap Cliff's delta CI
+bootstrap_cliffs_ci <- function(x, y, n = 1000, conf.level = 0.95) {
+  deltas <- replicate(n, {
+    x_resample <- sample(x, replace = TRUE)
+    y_resample <- sample(y, replace = TRUE)
+    cliff.delta(x_resample, y_resample)$estimate
+  })
+  alpha <- (1 - conf.level) / 2
+  ci <- quantile(deltas, probs = c(alpha, 1 - alpha))
+  return(ci)
+}
+
+# Compute Cliff's delta + 95% CI
+cliffs_results_ci <- map_df(1:nrow(sig_dunn), function(i) {
+  row <- sig_dunn[i, ]
+  var <- row$variable
+  comparison <- row$Comparison
+  groups <- str_split(comparison, " - ", simplify = TRUE)
+  
+  group1 <- groups[1]
+  group2 <- groups[2]
+  
+  data1 <- Stat_data %>% filter(group == group1) %>% pull(!!sym(var))
+  data2 <- Stat_data %>% filter(group == group2) %>% pull(!!sym(var))
+  
+  d <- cliff.delta(data1, data2)
+  ci <- bootstrap_cliffs_ci(data1, data2)
+  
+  tibble(
+    variable = var,
+    comparison = comparison,
+    delta = d$estimate,
+    ci_low = ci[1],
+    ci_high = ci[2],
+    magnitude = d$magnitude
+  )
+})
+
+# Inverse the Cliffs delta for interpratability
+cliffs_results_ci <- cliffs_results_ci %>%
+  mutate(
+    delta = -delta,
+    ci_low = -ci_low,
+    ci_high = -ci_high
+  )
+
+# Save to Excel
+write_xlsx(cliffs_results_ci, "Filename.xlsx")
+
+cliffs_results_ci <- read_xlsx("Filename.xlsx")
+
+
+# Create an empty list to store results
+summary_list <- list()
+
+# Loop through each variable in Quest_vars
+for (var in Quest_vars) {
+  
+  # Summary table for this variable
+  summary_df <- Stat_data %>%
+    group_by(individual.predicted) %>%
+    summarise(
+      Mean = mean(.data[[var]], na.rm = TRUE),
+      SD   = sd(.data[[var]], na.rm = TRUE)
+    ) %>%
+    mutate(
+      individual.predicted = as.character(individual.predicted),
+      Variable = var
+    ) %>%
+    relocate(Variable, .before = individual.predicted)
+  
+  # Add to list
+  summary_list[[var]] <- summary_df
+}
+
+# Combine all summaries into one data frame
+final_table <- bind_rows(summary_list)
+
+# Optional: rename group variable for readability
+colnames(final_table)[2] <- "Group"
+
+# Export to Excel
+write.xlsx(final_table, "filename.xlsx", rowNames = FALSE)
+#------------------------------------------------------------------------------#
+#                   Multivariate tests - biological data
+#------------------------------------------------------------------------------#
+
+# Combine data into one data frame
+npv_data <- Stat_data[, c("individual.predicted", Biol_vars)]
+npv_data$group <- as.factor(npv_data$individual.predicted)
+
+# Test overall p-value with non-parametric manova (no demographics)
+result <- nonpartest(NPY|Vasopressin|Oxytocin|Testosterone|SHBG|DHEA|GABA|cort_pre~individual.predicted,Stat_data,permreps=1000, plots=FALSE)
+
+# Create an empty list to store results
+summary_list <- list()
+
+# Loop through each variable in Quest_vars
+for (var in Biol_vars) {
+  
+  # Summary table for this variable
+  summary_df <- Stat_data %>%
+    group_by(individual.predicted) %>%
+    summarise(
+      Mean = mean(.data[[var]], na.rm = TRUE),
+      SD   = sd(.data[[var]], na.rm = TRUE)
+    ) %>%
+    mutate(
+      individual.predicted = as.character(individual.predicted),
+      Variable = var
+    ) %>%
+    relocate(Variable, .before = individual.predicted)
+  
+  # Add to list
+  summary_list[[var]] <- summary_df
+}
+
+# Combine all summaries into one data frame
+final_table <- bind_rows(summary_list)
+
+# Optional: rename group variable for readability
+colnames(final_table)[2] <- "Group"
+
+# Export to Excel
+write.xlsx(final_table, "filename.xlsx", rowNames = FALSE)
+
+#------------------------------------------------------------------------------#
+#                   Boxplots -  questionnaire data
+#------------------------------------------------------------------------------#
+
+
+# Assuming kw_results, dunn_results_fdr, and Stat_data are already loaded
+
+# Identify significant variables from kw_results
+significant_vars <- kw_results %>%
+  filter(p_fdr < 0.05) %>%
+  pull(variable)
+
+# Store all plots in a list
+plot_list <- list()
+
+for (var in significant_vars) {
+  # Create a box plot
+  p <- ggplot(Stat_data, aes(x = factor(individual.predicted), y = .data[[var]], fill = factor(individual.predicted))) +
+    geom_boxplot() +
+    labs(title = paste("Box plot of", var), x = "Group", y = var) +
+    theme_minimal()
+  
+  # Step 3: Annotate with significance indicators
+  sig_comparisons <- dunn_results_fdr %>%
+    filter(variable == var & p_fdr < 0.05) %>%
+    mutate(
+      stars = cut(p_fdr,
+                  breaks = c(-Inf, 0.001, 0.01, 0.05, Inf),
+                  labels = c("***", "**", "*", "ns"))
+    ) %>%
+    filter(stars != "ns")
+  
+  upper_range <- max(Stat_data[[var]], na.rm = TRUE)
+  sig_comparisons$y_values <- upper_range + seq(0.1, 0.6, length.out = nrow(sig_comparisons)) * upper_range
+  
+  if (nrow(sig_comparisons) > 0) {
+    for (i in 1:nrow(sig_comparisons)) {
+      comparison <- sig_comparisons$Comparison[i]
+      groups <- strsplit(comparison, " - ")[[1]]
+      
+      if (all(groups %in% levels(factor(Stat_data$individual.predicted)))) {
+        p <- p + ggpubr::geom_signif(
+          comparisons = list(groups),
+          y_position = sig_comparisons$y_values[i],
+          annotation = sig_comparisons$stars[i],
+          tip_length = 0.01
+        )
+      } else {
+        message("Groups not found in data: ", comparison)
+      }
+    }
+  }
+  
+  # Add to plot list
+  plot_list[[var]] <- p
+}
+
+
+# Combine all plots using egg
+final_plot <- ggarrange(plots = plot_list, ncol = 7)
+
+# Export to SVG (adjust width/height as needed)
+ggsave("filename.svg", final_plot, width = 20, height = 12, units = "in")
+
+#------------------------------------------------------------------------------#
+#           Hyperarousal no sleep items -  compare 5 trajectories
+#------------------------------------------------------------------------------#
+
+load('PathToData.RData')
+
+# Perform the Kruskal-Wallis test
+kruskal.test(Hyperarousal_noSleepA ~ individual.predicted, data = Stat_data)
+
+# Run Dunn’s test without multiple comparison correction
+dunn_result <- dunnTest(Hyperarousal_noSleepA ~ factor(individual.predicted),
+                        data = Stat_data,
+                        method = "none")  # Don't apply correction here
+
+# Extract the results and apply FDR correction manually
+dunn_df <- dunn_result$res
+
+# Add FDR-corrected p-values
+dunn_df <- dunn_df %>%
+  mutate(p_fdr = p.adjust(P.adj, method = "fdr"))
+
+# View the result
+print(dunn_df)
+
+write.xlsx(dunn_df, "Filename.xlsx", rowNames = FALSE)
+
+group1 <- Stat_data$Hyperarousal_noSleepA[Stat_data$individual.predicted == "2"]
+group2 <- Stat_data$Hyperarousal_noSleepA[Stat_data$individual.predicted == "5"]
+
+cliff_delta <- cliff.delta(group1, group2)
+print(cliff_delta)
+
+#------------------------------------------------------------------------------#
+#                     DES per item - exploratory
+#------------------------------------------------------------------------------#
+
+load('PathToDaata.RData')
+
+# List all objects in the environment
+objects_loaded <- ls()
+
+# Remove all objects except df_Des
+for (obj in setdiff(objects_loaded, "df_Des")) {
+  rm(list = obj)
+}
+
+df_Des$DES_B_SUM <- NULL
+df_Des$individual.predicted <- df_outcome5$individual.predicted
+
+# Select only DES_B columns
+des_cols <- paste0("DES_B_", 1:19)
+
+# Chi-square results
+chi_results <- lapply(des_cols, function(var) {
+  tbl <- table(df_Des[[var]], df_Des$individual.predicted)
+  chi <- chisq.test(tbl)
+  data.frame(variable = var, 
+             p_value = chi$p.value,
+             statistic = chi$statistic)
+})
+chi_results_df <- bind_rows(chi_results)
+
+# Calculate percentages per group
+percent_table <- df_Des %>%
+  group_by(individual.predicted) %>%
+  summarise(across(all_of(des_cols), ~ mean(.x, na.rm = TRUE) * 100)) %>%
+  pivot_longer(cols = -individual.predicted, names_to = "variable", values_to = "percentage")
+
+# Reshape to wide format (optional, for clearer table)
+percent_wide <- percent_table %>%
+  pivot_wider(names_from = individual.predicted, values_from = percentage, names_prefix = "Group_")
+
+# Combine stats and percentages
+summary_table <- left_join(chi_results_df, percent_wide, by = "variable")
+
+# View
+print(summary_table)
+
+write.xlsx(summary_table, "Filename.xlsx", rowNames = FALSE)
+
+#------------------------------------------------------------------------------#
+#                 Number of previous deployments - exploratory
+#------------------------------------------------------------------------------#
+
+# Count occurrences of each number
+counts <- table(Stat_data$Aantal_prev_depl)
+
+# Convert counts to percentages
+percentages <- prop.table(counts) * 100
+
+# Print the percentages
+print(percentages)
+
+# Calculate per trajectory
+# Group by individual.predicted and calculate the distribution of Aantal_prev_depl
+group_distribution <- Stat_data %>%
+  group_by(`individual.predicted`) %>%
+  count(`Aantal_prev_depl`) %>%
+  group_by(`individual.predicted`, add = TRUE) %>%
+  mutate(percentage = n / sum(n) * 100)
+
+# Print the group distribution
+print(group_distribution)
+
+# Write to excel
+write.xlsx(group_distribution, "Filename.xlsx", rowNames = FALSE)
+
+
+#------------------------------------------------------------------------------#
+#                % above threshold insomnia symptoms for the 5 trajectories
+#------------------------------------------------------------------------------#
+
+load("PathToFile.RData")
+load("PathToFile.RData")
+
+# Create a new column 'High_sleep_score' in Stat_data that reflects if someone scores above the cut-off of 9 for at least one time point
+Stat_data$High_sleep_score <- ifelse(rowSums(Scl_sleep >= 9, na.rm = TRUE) > 0, 1, 0)
+
+# Distribution sleeping problems above cut-off (9)
+#---------------------------------------------------#
+
+# Create a contingency table of 'gender' distribution between the two groups
+contingency_table <- table(Stat_data$High_sleep_score, Stat_data$individual.predicted)
+
+# Add a small value to each cell to ensure all counts are positive
+contingency_table <- contingency_table
+
+# Perform Chi-square test
+chi_square_test <- chisq.test(contingency_table)
+
+# Extract p-value
+p_value <- chi_square_test$p.value
+
+
+# Show numbers per group
+print (contingency_table)
